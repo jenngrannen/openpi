@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.arx_policy as arx_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -379,6 +380,63 @@ class RLDSDroidDataConfig(DataConfigFactory):
             action_space=self.action_space,
         )
 
+@dataclasses.dataclass(frozen=True)
+class ARXDataConfig(DataConfigFactory): # TODO(jenn): this is a placeholder for now
+    """
+    Config for training on ARX.
+    """
+
+    # If true, will convert joint dimensions to deltas with respect to the current state before passing to the model.
+    # Gripper dimensions will remain in absolute values.
+    use_delta_joint_actions: bool = True
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+    # If true, this will convert the joint and gripper values from the ARX space to
+    # the space used by the pi internal runtime which was used to train the base model. 
+    adapt_to_pi: bool = True
+
+    # Action keys that will be used to read the action sequence from the dataset.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image/exterior_image_1_left/color_image": "observation/image",
+                        "observation/image/wrist_image_left/color_image": "observation/left_wrist_0_rgb",
+                        "observation/image/wrist_image_right/color_image": "observation/right_wrist_0_rgb",
+                        "observation/joint_position": "observation/joint_position",
+                        "observation/gripper_position": "observation/gripper_position",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+
+        data_transforms = _transforms.Group(
+            inputs=[arx_policy.ArxInputs(action_dim=model_config.action_dim, adapt_to_pi=self.adapt_to_pi)],
+            outputs=[arx_policy.ArxOutputs(adapt_to_pi=self.adapt_to_pi)],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -529,6 +587,53 @@ _CONFIGS = [
                 prompt_from_task=True,
             ),
         ),
+    ),
+
+    #
+    # Inference ARX configs.
+    #
+    TrainConfig(
+        name="pi0_arx",
+        model=pi0.Pi0Config(),
+        data=SimpleDataConfig(
+            assets=AssetsConfig(asset_id="arx"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[arx_policy.ArxInputs(action_dim=model.action_dim, model_type=ModelType.PI0)],
+                outputs=[arx_policy.ArxOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+        ),
+    ),
+
+    #
+    # Fine-tuning ARX configs.
+    # Not tested yet.
+    #
+    TrainConfig(
+        name="pi0_arx_finetune",
+        model=pi0.Pi0Config(
+            action_dim=14,
+            action_horizon=16,
+            max_token_len=180,
+        ),
+        data=ARXDataConfig(
+            assets=AssetsConfig(asset_id="arx"), # TODO(jenn): this is a placeholder for now
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        num_train_steps=100_000,  # 100k steps should be sufficient, takes ~2 days on 8x H100s
+        batch_size=256,
+        log_interval=100,
+        save_interval=5000,
+        keep_period=20_000,
+        num_workers=0, 
     ),
     #
     # Fine-tuning Libero configs.
