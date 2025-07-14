@@ -9,28 +9,18 @@ from openpi.models import model as _model
 
 def make_arx_example() -> dict:
     """Creates a random input example for the ARX5 policy."""
-    cam_names = ["left_camera", "right_camera", "wrist_left_camera", "wrist_right_camera"]
+    cam_names = ["cam_high", "cam_low", "cam_left_wrist", "cam_right_wrist"]
     visual_obs = {}
     for camera_name in cam_names:
-        visual_obs[camera_name] = {
-            'frame_index': 0,
-            'timestamp': 0,
-            'color_image': np.random.randint(256, size=(224, 224, 3), dtype=np.uint8)
-        }
+        # Get the latest frame from the queue
+        visual_obs[camera_name] = np.random.randint(256, size=(224, 224, 3), dtype=np.uint8)
+        visual_obs[f"{camera_name}_frame_index"] = 0
+        visual_obs[f"{camera_name}_timestamp"] = 0
 
-    state_obs = {}
-    follower_names = ["left_follower", "right_follower"]
-    for follower_name in follower_names:
-        state_obs[follower_name] = {
-            'timestamp': 0,
-            'joint_state': np.random.rand(7)
-        }
-
-    return {
-        "images": visual_obs,
-        "states": state_obs,
-        "prompt": "do something",
-    }
+    obs = {}
+    obs["state"] = np.random.rand(14) # np.concatenate([left_arm_qpos, left_gripper_qpos, right_arm_qpos, right_gripper_qpos])
+    obs["images"] = visual_obs
+    return obs
 
 
 def _parse_image(image) -> np.ndarray:
@@ -54,34 +44,29 @@ class ArxInputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Process ARX5 raw observation format
         visual_obs = data["images"]
-        state_obs = data["states"]
+        state_obs = data["state"]
         
         # Extract joint positions and gripper positions from all follower arms
-        state = []
-        for _, state_data in state_obs.items():
-            joint_state = state_data["joint_state"]
-            # First 6 joints are arm joints, last joint is gripper
-            state.extend(joint_state)
-
+        state = state_obs
         state = np.array(state)
         state = transforms.pad_to_dim(state, self.action_dim)
 
         # Select external camera for policy (use left_camera as default)
-        if "left_camera" in visual_obs:
-            base_left_image = _parse_image(visual_obs["left_camera"]["color_image"])
-        if "right_camera" in visual_obs:
-            base_right_image = _parse_image(visual_obs["right_camera"]["color_image"])
+        if "cam_high" in visual_obs:
+            base_left_image = _parse_image(visual_obs["cam_high"])
+        if "cam_low" in visual_obs:
+            base_right_image = _parse_image(visual_obs["cam_low"])
         
         wrist_left_image = None
         wrist_right_image = None
         
-        if "wrist_left_camera" in visual_obs:
-            wrist_left_image = _parse_image(visual_obs["wrist_left_camera"]["color_image"])
+        if "cam_left_wrist" in visual_obs:
+            wrist_left_image = _parse_image(visual_obs["cam_left_wrist"])
         else:
             wrist_left_image = np.zeros_like(base_left_image)
 
-        if "wrist_right_camera" in visual_obs:
-            wrist_right_image = _parse_image(visual_obs["wrist_right_camera"]["color_image"])
+        if "cam_right_wrist" in visual_obs:
+            wrist_right_image = _parse_image(visual_obs["cam_right_wrist"])
         else:
             wrist_right_image = np.zeros_like(base_left_image)
         
