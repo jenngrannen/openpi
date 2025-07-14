@@ -18,7 +18,7 @@ from sensor_msgs.msg import JointState
 from examples.arx_real import constants
 from examples.arx_real.arx5_config import config
 
-OFFLINE = True
+OFFLINE = False
 
 if not OFFLINE:
     import pyrealsense2 as rs

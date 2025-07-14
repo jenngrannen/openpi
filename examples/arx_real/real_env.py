@@ -11,7 +11,7 @@ from examples.arx_real import constants
 from examples.arx_real import robot_utils
 
 # OFFLINE flag for testing without hardware
-OFFLINE = False
+OFFLINE = robot_utils.OFFLINE
 
 if not OFFLINE:
     import pyrealsense2 as rs
